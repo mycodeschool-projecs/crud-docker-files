@@ -38,7 +38,7 @@ services:
         condition: service_healthy
 
   kube-ms1:
-    image: ion21/kube-ms1:v3
+    image: mycodeschool/kube-ms1:v3
     networks:
       - mynet
     ports:
