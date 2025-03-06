@@ -26,7 +26,7 @@ services:
       retries: 1
 
   kube-land:
-    image: ion21/kube-land:v3
+    image: mycodeschool/kube-land:v3
     networks:
       - mynet
     environment:
