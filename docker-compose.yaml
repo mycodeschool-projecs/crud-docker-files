@@ -51,7 +51,7 @@ services:
         condition: service_healthy
 
   client:
-    image: mycodeschool/kube-client:06.03.2025.13.35.00
+    image: mycodeschool/kube-client:07.03.2025.08.04.40
     networks:
       - mynet
     ports:
