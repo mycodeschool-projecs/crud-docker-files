@@ -51,7 +51,7 @@ services:
         condition: service_healthy
 
   client:
-    image: mycodeschool/crud-client-api:16.03.2025.08.10.52
+    image: mycodeschool/crud-client-api:16.03.2025.08.35.19
     networks:
       - mynet
     ports:
