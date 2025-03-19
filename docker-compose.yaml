@@ -13,7 +13,7 @@ services:
     image: mysql:8.0
     environment:
       MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: micro_db
+      MYSQL_DATABASE: kube_db
     networks:
       - mynet
     ports:
