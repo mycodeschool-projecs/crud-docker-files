@@ -152,7 +152,7 @@ services:
     networks:
       - mynet
     ports:
-      - "3000:3000"
+      - "3100:3100"
     depends_on:
       - elasticsearch
 
