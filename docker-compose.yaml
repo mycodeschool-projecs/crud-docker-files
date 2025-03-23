@@ -46,7 +46,7 @@ services:
         condition: service_healthy
 
   kube-ms1:
-    image: mycodeschool/crud-command-api:07.03.2025.17.59.59
+    image: mycodeschool/crud-command-api:23.03.2025.18.12.29
     networks:
       - mynet
     ports:
