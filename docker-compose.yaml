@@ -34,7 +34,7 @@ services:
       retries: 1
 
   kube-land:
-    image: mycodeschool/crud-auth-api:23.03.2025.16.02.02
+    image: mycodeschool/crud-auth-api:20.03.2025.06.37.13
     networks:
       - mynet
     environment:
@@ -46,7 +46,7 @@ services:
         condition: service_healthy
 
   kube-ms1:
-    image: mycodeschool/crud-command-api:23.03.2025.15.37.12
+    image: mycodeschool/crud-command-api:07.03.2025.17.59.59
     networks:
       - mynet
     ports:
@@ -147,6 +147,7 @@ services:
             user => "elastic"
             password => "$${ELASTIC_PASSWORD}"
             ssl => false
+            index => "kube-land"
           }
         }
     networks:
