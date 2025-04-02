@@ -9,9 +9,9 @@ volumes:
   kibana_data_test:
   es_data_test:
   logstash_pipeline:
-  prometheus_data_test:
-  grafana_data_test:
-  grafana_provisioning_test:
+  prometheus_data:
+  grafana_data:
+  grafana_provisioning:
     driver: local
 
 x-variables:
@@ -185,7 +185,7 @@ services:
     image: prom/prometheus:latest
     container_name: prometheus
     volumes:
-      - prometheus_data_test:/prometheus
+      - prometheus_data:/prometheus
     environment:
       PROMETHEUS_CONFIG: |
         global:
@@ -198,7 +198,6 @@ services:
               - targets:
                   - 'kube-land:8082'
                   - 'kube-ms1:8081'
-
     entrypoint:
       - /bin/sh
       - -c
@@ -208,7 +207,7 @@ services:
     ports:
       - '9090:9090'
     depends_on:
-      - service
+      - kube-land
     networks:
       - mynet
 
