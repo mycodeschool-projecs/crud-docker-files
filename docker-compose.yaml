@@ -38,7 +38,7 @@ services:
       retries: 1
 
   kube-land:
-    image: mycodeschool/crud-auth-api:29.03.2025.16.35.52
+    image: mycodeschool/crud-auth-api:15.04.2025.08.55.52
     networks:
       - mynet
     environment:
