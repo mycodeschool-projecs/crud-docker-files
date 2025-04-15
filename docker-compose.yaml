@@ -63,7 +63,7 @@ services:
         condition: service_healthy
 
   edge:
-    image: mycodeschool/crud-gateway:15.04.2025.08.33.45
+    image: mycodeschool/crud-gateway:15.04.2025.08.39.25
     networks:
       - mynet
     ports:
