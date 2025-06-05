@@ -13,6 +13,8 @@ volumes:
   grafana_data:
   grafana_provisioning:
     driver: local
+  rabbitmq_data:
+    driver: local
 
 x-variables:
   elastic_password: &elastic_password 'passwOrd'
@@ -91,7 +93,7 @@ services:
       - REACT_APP_API_URL=http://localhost:3000
      # - REACT_APP_API_URL=http://icode.mywire.org:5000
 
- 
+
   zipkin:
     image: openzipkin/zipkin
     container_name: zipkin
@@ -140,14 +142,31 @@ services:
       ELASTICSEARCH_USERNAME: 'kibana_system'
       ELASTICSEARCH_PASSWORD: *kibana_password
       TELEMETRY_ENABLED: 'false'
+      # Add encryption keys to prevent warnings
+      XPACK_SECURITY_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_REPORTING_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      # Set reporting roles to false as suggested in warning
+      XPACK_REPORTING_ROLES_ENABLED: 'false'
+      # Enable secure cookies
+      XPACK_SECURITY_SECURECOOKIES: 'true'
+      # Fix for Chromium sandbox warning
+      XPACK_SCREENSHOTTING_BROWSER_CHROMIUM_DISABLESANDBOX: 'true'
     networks:
       - mynet
     ports:
       - '5601:5601'
     depends_on:
       - elasticsearch
+      - setup
     volumes:
       - kibana_data_test:/usr/share/kibana/data
+    restart: on-failure
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1 302 Found'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   logstash:
     image: docker.elastic.co/logstash/logstash:8.12.1
@@ -188,14 +207,34 @@ services:
       - -c
       - |
         echo "Waiting for Elasticsearch availability";
-        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 10; done;
+        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do 
+          echo "Elasticsearch not ready yet, waiting...";
+          sleep 10; 
+        done;
+
+        echo "Elasticsearch is available, waiting additional time for full initialization...";
+        sleep 30;
+
         echo "Setting kibana_system password";
         until curl -s -X POST -u "elastic:$${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
           http://elasticsearch:9200/_security/user/kibana_system/_password \
-          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 10; done;
-        echo "All done!";
+          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do 
+          echo "Failed to set kibana_system password, retrying...";
+          sleep 10; 
+        done;
+
+        echo "Password set successfully. Verifying kibana_system user...";
+        if curl -s -I -u "kibana_system:$${KIBANA_PASSWORD}" http://elasticsearch:9200/_cluster/health | grep -q "200 OK"; then
+          echo "kibana_system user verified successfully!";
+        else
+          echo "Warning: Could not verify kibana_system user. Kibana might have connection issues.";
+        fi
+
+        echo "Setup completed!";
     networks:
       - mynet
+    depends_on:
+      - elasticsearch
 
   prometheus:
     image: prom/prometheus:latest
@@ -261,3 +300,39 @@ services:
             editable: false
         ' > /etc/grafana/provisioning/datasources/datasource.yml
         /run.sh
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    networks:
+      - mynet
+    ports:
+      - "5672:5672"  # AMQP port
+      - "15672:15672"  # Management UI port
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  notifications-service:
+    image: mycodeschool/crud-notifications-api:latest
+    build:
+      context: ../crud-notifications-api
+      dockerfile: Dockerfile
+    networks:
+      - mynet
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy

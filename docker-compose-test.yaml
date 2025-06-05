@@ -1,0 +1,400 @@
+networks:
+  mynet:
+    driver: bridge
+
+volumes:
+  db_data:
+    driver: local
+  kibana_data_test:
+  es_data_test:
+  logstash_pipeline:
+  prometheus_data:
+  grafana_data:
+  grafana_provisioning:
+    driver: local
+  rabbitmq_data:
+    driver: local
+
+x-variables:
+  elastic_password: &elastic_password passwOrd
+  kibana_password: &kibana_password passwOrd
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: kube_db
+    networks:
+      - mynet
+    ports:
+      - "3307:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    networks:
+      - mynet
+    ports:
+      - "9411:9411"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9411/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.1
+    container_name: elasticsearch
+    environment:
+      ELASTIC_PASSWORD: *elastic_password
+      discovery.type: single-node
+      cluster.name: elasticsearch
+      bootstrap.memory_lock: 'true'
+      ES_JAVA_OPTS: '-Xms1g -Xmx1g'
+      xpack.security.enabled: 'true'
+      xpack.security.http.ssl.enabled: 'false'
+    networks:
+      - mynet
+    ports:
+      - "9200:9200"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    volumes:
+      - es_data_test:/usr/share/elasticsearch/data
+
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.1
+    container_name: setup
+    environment:
+      ELASTIC_PASSWORD: *elastic_password
+      KIBANA_PASSWORD: *kibana_password
+    command:
+      - bash
+      - -c
+      - |
+        echo "Waiting for Elasticsearch availability";
+        until curl -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do 
+          echo "Elasticsearch not ready yet, waiting...";
+          sleep 10; 
+        done;
+
+        echo "Elasticsearch is available, waiting for cluster to be ready...";
+        until curl -s -u "elastic:${ELASTIC_PASSWORD}" http://elasticsearch:9200/_cluster/health?wait_for_status=yellow | grep -q '"status"'; do
+          echo "Cluster not ready yet, waiting...";
+          sleep 10;
+        done;
+
+        echo "Setting kibana_system password";
+        until curl -s -X POST -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do 
+          echo "Failed to set kibana_system password, retrying...";
+          sleep 10; 
+        done;
+
+        echo "Password set successfully. Verifying kibana_system user...";
+        if curl -s -I -u "kibana_system:${KIBANA_PASSWORD}" http://elasticsearch:9200/_cluster/health | grep -q "200 OK"; then
+          echo "kibana_system user verified successfully!";
+        else
+          echo "Warning: Could not verify kibana_system user. Kibana might have connection issues.";
+        fi
+
+        echo "Creating index template for kube-land indices...";
+        curl -s -X PUT "http://elasticsearch:9200/_index_template/kube-land-template" \
+          -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "index_patterns": ["kube-land-*"],
+            "template": {
+              "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "index.lifecycle.name": "kube-land-policy",
+                "index.lifecycle.rollover_alias": "kube-land"
+              },
+              "mappings": {
+                "properties": {
+                  "@timestamp": {
+                    "type": "date"
+                  },
+                  "message": {
+                    "type": "text",
+                    "fields": {
+                      "keyword": {
+                        "type": "keyword",
+                        "ignore_above": 256
+                      }
+                    }
+                  },
+                  "level": {
+                    "type": "keyword"
+                  },
+                  "logger_name": {
+                    "type": "keyword"
+                  },
+                  "thread_name": {
+                    "type": "keyword"
+                  },
+                  "application": {
+                    "type": "keyword"
+                  },
+                  "class": {
+                    "type": "keyword"
+                  },
+                  "method": {
+                    "type": "keyword"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "stack_trace": {
+                    "type": "text"
+                  },
+                  "trace_id": {
+                    "type": "keyword"
+                  },
+                  "span_id": {
+                    "type": "keyword"
+                  }
+                }
+              }
+            }
+          }' | grep -q "acknowledged" && echo "Index template created successfully!" || echo "Failed to create index template";
+
+        echo "Creating ILM policy for kube-land indices...";
+        curl -s -X PUT "http://elasticsearch:9200/_ilm/policy/kube-land-policy" \
+          -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "policy": {
+              "phases": {
+                "hot": {
+                  "min_age": "0ms",
+                  "actions": {
+                    "rollover": {
+                      "max_age": "7d",
+                      "max_primary_shard_size": "50GB"
+                    }
+                  }
+                },
+                "delete": {
+                  "min_age": "30d",
+                  "actions": {
+                    "delete": {}
+                  }
+                }
+              }
+            }
+          }' | grep -q "acknowledged" && echo "ILM policy created successfully!" || echo "Failed to create ILM policy";
+
+        echo "Setup completed!";
+    networks:
+      - mynet
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: on-failure
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.1
+    container_name: kibana
+    environment:
+      ELASTICSEARCH_HOSTS: 'http://elasticsearch:9200'
+      ELASTICSEARCH_USERNAME: 'kibana_system'
+      ELASTICSEARCH_PASSWORD: *kibana_password
+      TELEMETRY_ENABLED: 'false'
+      # Add encryption keys to prevent warnings
+      XPACK_SECURITY_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_REPORTING_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      # Set reporting roles to false as suggested in warning
+      XPACK_REPORTING_ROLES_ENABLED: 'false'
+      # Enable secure cookies
+      XPACK_SECURITY_SECURECOOKIES: 'false'
+      # Fix for Chromium sandbox warning
+      XPACK_SCREENSHOTTING_BROWSER_CHROMIUM_DISABLESANDBOX: 'true'
+    networks:
+      - mynet
+    ports:
+      - '5601:5601'
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    volumes:
+      - kibana_data_test:/usr/share/kibana/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.1
+    container_name: logstash
+    environment:
+      ELASTIC_PASSWORD: *elastic_password
+      XPACK_MONITORING_ENABLED: "false"
+      CONFIG_STRING: |
+        input {
+          tcp {
+            port => 3100
+            codec => json_lines
+          }
+        }
+
+        filter {
+          mutate {
+            add_field => { "[@metadata][target_index]" => "kube-land-%{+YYYY.MM.dd}" }
+          }
+
+          if ![application] {
+            mutate {
+              add_field => { "application" => "unknown" }
+            }
+          }
+        }
+
+        output {
+          elasticsearch {
+            hosts => ["http://elasticsearch:9200"]
+            user => "elastic"
+            password => "${ELASTIC_PASSWORD}"
+            ssl_enabled => false
+            ilm_enabled => false
+            index => "%{[@metadata][target_index]}"
+          }
+
+          stdout {
+            codec => rubydebug
+          }
+        }
+    networks:
+      - mynet
+    ports:
+      - "3100:3100"
+      - "9600:9600"  # Logstash monitoring API
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9600/_node/pipelines?pretty || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - prometheus_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - '9090:9090'
+    networks:
+      - mynet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=secret
+      - GF_SERVER_HTTP_PORT=4000  # Custom Grafana port
+    ports:
+      - "4000:4000"  # Map host port to container port
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - mynet
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - grafana_provisioning:/etc/grafana/provisioning
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:4000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mkdir -p /etc/grafana/provisioning/datasources
+        mkdir -p /etc/grafana/provisioning/dashboards
+        echo '
+        apiVersion: 1
+
+        datasources:
+          - name: Prometheus
+            type: prometheus
+            access: proxy
+            isDefault: true
+            url: http://prometheus:9090
+            version: 1
+            editable: false
+        ' > /etc/grafana/provisioning/datasources/datasource.yml
+        /run.sh
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    networks:
+      - mynet
+    ports:
+      - "5672:5672"    # AMQP port
+      - "15672:15672"  # Management UI port
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
