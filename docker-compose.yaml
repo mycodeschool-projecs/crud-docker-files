@@ -81,7 +81,7 @@ services:
 
 
   client:
-    image: mycodeschool/crud-client-api:05.06.2025.20.30.20
+    image: mycodeschool/crud-client-api:05.06.2025.20.54.58
     networks:
       - mynet
     ports:
