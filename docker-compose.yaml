@@ -40,7 +40,7 @@ services:
       retries: 1
 
   kube-land:
-    image: mycodeschool/crud-auth-api:15.05.2025.11.01.05
+    image: mycodeschool/crud-auth-api:02.06.2025.13.23.10
     networks:
       - mynet
     environment:
@@ -52,7 +52,7 @@ services:
         condition: service_healthy
 
   kube-ms1:
-    image: mycodeschool/crud-command-api:15.05.2025.08.26.56
+    image: mycodeschool/crud-command-api:02.06.2025.13.18.32
     networks:
       - mynet
     ports:
@@ -81,7 +81,7 @@ services:
 
 
   client:
-    image: mycodeschool/crud-client-api:16.03.2025.08.35.19
+    image: mycodeschool/crud-client-api:02.06.2025.18.25.30
     networks:
       - mynet
     ports:
