@@ -40,7 +40,7 @@ services:
       retries: 1
 
   kube-land:
-    image: mycodeschool/crud-auth-api:13.06.2025.10.23.04
+    image: mycodeschool/crud-auth-api:15.06.2025.16.52.33-dev
     networks:
       - mynet
     environment:
@@ -51,8 +51,10 @@ services:
       mysql:
         condition: service_healthy
 
+
+
   kube-ms1:
-    image: mycodeschool/crud-command-api:05.06.2025.21.05.53
+    image: mycodeschool/crud-command-api:15.06.2025.06.08.50-dev
     networks:
       - mynet
     ports:
@@ -79,9 +81,23 @@ services:
       zipkin:
         condition: service_started
 
+  notifications-service:
+    image: mycodeschool/crud-notification-api:15.06.2025.15.35.07-dev
+    networks:
+      - mynet
+    ports:
+      - "8083:8083"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
 
   client:
-    image: mycodeschool/crud-client-api:05.06.2025.21.06.10
+    image: mycodeschool/crud-client-api:15.06.2025.05.42.51-dev
     networks:
       - mynet
     ports:
@@ -149,7 +165,7 @@ services:
       # Set reporting roles to false as suggested in warning
       XPACK_REPORTING_ROLES_ENABLED: 'false'
       # Enable secure cookies
-      XPACK_SECURITY_SECURECOOKIES: 'true'
+      XPACK_SECURITY_SECURECOOKIES: 'false'
       # Fix for Chromium sandbox warning
       XPACK_SCREENSHOTTING_BROWSER_CHROMIUM_DISABLESANDBOX: 'true'
     networks:
@@ -157,16 +173,20 @@ services:
     ports:
       - '5601:5601'
     depends_on:
-      - elasticsearch
-      - setup
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
     volumes:
       - kibana_data_test:/usr/share/kibana/data
-    restart: on-failure
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1 302 Found'"]
+      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1'"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 120s
+
 
   logstash:
     image: docker.elastic.co/logstash/logstash:8.12.1
@@ -212,29 +232,122 @@ services:
           sleep 10; 
         done;
 
-        echo "Elasticsearch is available, waiting additional time for full initialization...";
-        sleep 30;
+        echo "Elasticsearch is available, waiting for cluster to be ready...";
+        until curl -s -u "elastic:${ELASTIC_PASSWORD}" http://elasticsearch:9200/_cluster/health?wait_for_status=yellow | grep -q '"status"'; do
+          echo "Cluster not ready yet, waiting...";
+          sleep 10;
+        done;
 
         echo "Setting kibana_system password";
-        until curl -s -X POST -u "elastic:$${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
+        until curl -s -X POST -u "elastic:${ELASTIC_PASSWORD}" -H "Content-Type: application/json" \
           http://elasticsearch:9200/_security/user/kibana_system/_password \
-          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do 
+          -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do 
           echo "Failed to set kibana_system password, retrying...";
           sleep 10; 
         done;
 
         echo "Password set successfully. Verifying kibana_system user...";
-        if curl -s -I -u "kibana_system:$${KIBANA_PASSWORD}" http://elasticsearch:9200/_cluster/health | grep -q "200 OK"; then
+        if curl -s -I -u "kibana_system:${KIBANA_PASSWORD}" http://elasticsearch:9200/_cluster/health | grep -q "200 OK"; then
           echo "kibana_system user verified successfully!";
         else
           echo "Warning: Could not verify kibana_system user. Kibana might have connection issues.";
         fi
 
+        echo "Creating index template for kube-land indices...";
+        curl -s -X PUT "http://elasticsearch:9200/_index_template/kube-land-template" \
+          -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "index_patterns": ["kube-land-*"],
+            "template": {
+              "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "index.lifecycle.name": "kube-land-policy",
+                "index.lifecycle.rollover_alias": "kube-land"
+              },
+              "mappings": {
+                "properties": {
+                  "@timestamp": {
+                    "type": "date"
+                  },
+                  "message": {
+                    "type": "text",
+                    "fields": {
+                      "keyword": {
+                        "type": "keyword",
+                        "ignore_above": 256
+                      }
+                    }
+                  },
+                  "level": {
+                    "type": "keyword"
+                  },
+                  "logger_name": {
+                    "type": "keyword"
+                  },
+                  "thread_name": {
+                    "type": "keyword"
+                  },
+                  "application": {
+                    "type": "keyword"
+                  },
+                  "class": {
+                    "type": "keyword"
+                  },
+                  "method": {
+                    "type": "keyword"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "stack_trace": {
+                    "type": "text"
+                  },
+                  "trace_id": {
+                    "type": "keyword"
+                  },
+                  "span_id": {
+                    "type": "keyword"
+                  }
+                }
+              }
+            }
+          }' | grep -q "acknowledged" && echo "Index template created successfully!" || echo "Failed to create index template";
+
+        echo "Creating ILM policy for kube-land indices...";
+        curl -s -X PUT "http://elasticsearch:9200/_ilm/policy/kube-land-policy" \
+          -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "policy": {
+              "phases": {
+                "hot": {
+                  "min_age": "0ms",
+                  "actions": {
+                    "rollover": {
+                      "max_age": "7d",
+                      "max_primary_shard_size": "50GB"
+                    }
+                  }
+                },
+                "delete": {
+                  "min_age": "30d",
+                  "actions": {
+                    "delete": {}
+                  }
+                }
+              }
+            }
+          }' | grep -q "acknowledged" && echo "ILM policy created successfully!" || echo "Failed to create ILM policy";
+
         echo "Setup completed!";
     networks:
       - mynet
     depends_on:
-      - elasticsearch
+      elasticsearch:
+        condition: service_healthy
+    restart: on-failure
 
   prometheus:
     image: prom/prometheus:latest
@@ -301,6 +414,7 @@ services:
         ' > /etc/grafana/provisioning/datasources/datasource.yml
         /run.sh
 
+
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
@@ -320,19 +434,3 @@ services:
       timeout: 10s
       retries: 5
 
-  notifications-service:
-    image: mycodeschool/crud-notifications-api:latest
-    build:
-      context: ../crud-notifications-api
-      dockerfile: Dockerfile
-    networks:
-      - mynet
-    ports:
-      - "8083:8083"
-    environment:
-      SPRING_PROFILES_ACTIVE: docker
-    depends_on:
-      mysql:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
