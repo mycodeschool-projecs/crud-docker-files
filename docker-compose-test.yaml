@@ -379,7 +379,7 @@ services:
         /run.sh
 
   rabbitmq:
-    image: rabbitmq:3-management
+    image: rabbitmq:4.0.9-alpine
     container_name: rabbitmq
     networks:
       - mynet
