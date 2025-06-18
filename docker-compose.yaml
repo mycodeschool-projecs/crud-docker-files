@@ -82,7 +82,7 @@ services:
         condition: service_started
 
   notifications-service:
-    image: mycodeschool/crud-notification-api:18.06.2025.16.58.50-dev
+    image: mycodeschool/crud-notification-api:18.06.2025.17.04.16-prod
     networks:
       - mynet
     ports:
