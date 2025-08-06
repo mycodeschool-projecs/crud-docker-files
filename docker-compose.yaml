@@ -27,8 +27,10 @@ x-variables:
 
 services:
 
+
   mysql:
     image: mysql:8.0
+    container_name: mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: kube_db
@@ -38,10 +40,17 @@ services:
       - "3307:3306"
     volumes:
       - db_data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 1
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
 
   kube-land:
     image: mycodeschool/crud-auth-api:09.07.2025.19.03.23-dev
@@ -101,7 +110,7 @@ services:
 
 
   client:
-    image: mycodeschool/crud-client-api:06.08.2025.16.29.34-dev
+    image: mycodeschool/crud-client:06.08.2025.16.29.34-dev
     networks:
       - mynet
     ports:
@@ -132,8 +141,8 @@ services:
     container_name: elasticsearch
     environment:
       ELASTIC_PASSWORD: *elastic_password
-      discovery.type: 'single-node'
-      cluster.name: 'elasticsearch'
+      discovery.type: single-node
+      cluster.name: elasticsearch
       bootstrap.memory_lock: 'true'
       ES_JAVA_OPTS: '-Xms1g -Xmx1g'
       xpack.security.enabled: 'true'
@@ -146,79 +155,16 @@ services:
       memlock:
         soft: -1
         hard: -1
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    volumes:
-      - es_data_test:/usr/share/elasticsearch/data
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.12.1
-    container_name: kibana
-    environment:
-      ELASTICSEARCH_HOSTS: 'http://elasticsearch:9200'
-      ELASTICSEARCH_USERNAME: 'kibana_system'
-      ELASTICSEARCH_PASSWORD: *kibana_password
-      TELEMETRY_ENABLED: 'false'
-      # Add encryption keys to prevent warnings
-      XPACK_SECURITY_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
-      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
-      XPACK_REPORTING_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
-      # Set reporting roles to false as suggested in warning
-      XPACK_REPORTING_ROLES_ENABLED: 'false'
-      # Enable secure cookies
-      XPACK_SECURITY_SECURECOOKIES: 'false'
-      # Fix for Chromium sandbox warning
-      XPACK_SCREENSHOTTING_BROWSER_CHROMIUM_DISABLESANDBOX: 'true'
-    networks:
-      - mynet
-    ports:
-      - '5601:5601'
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-      setup:
-        condition: service_completed_successfully
-    volumes:
-      - kibana_data_test:/usr/share/kibana/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1'"]
+      test: ["CMD-SHELL", "curl -s -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 120s
+      start_period: 60s
+    volumes:
+      - es_data_test:/usr/share/elasticsearch/data
 
-
-  logstash:
-    image: docker.elastic.co/logstash/logstash:8.12.1
-    container_name: logstash
-    environment:
-      ELASTIC_PASSWORD: *elastic_password
-      CONFIG_STRING: |
-        input {
-          tcp {
-            port => 3100
-            codec => json_lines
-          }
-        }
-        output {
-          elasticsearch {
-            hosts => ["http://elasticsearch:9200"]
-            user => "elastic"
-            password => "$${ELASTIC_PASSWORD}"
-            ssl => false
-            index => "kube-land"
-          }
-        }
-    networks:
-      - mynet
-    ports:
-      - "3100:3100"
-    depends_on:
-      - elasticsearch
 
   setup:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.1
@@ -353,6 +299,103 @@ services:
         condition: service_healthy
     restart: on-failure
 
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.1
+    container_name: kibana
+    environment:
+      ELASTICSEARCH_HOSTS: 'http://elasticsearch:9200'
+      ELASTICSEARCH_USERNAME: 'kibana_system'
+      ELASTICSEARCH_PASSWORD: *kibana_password
+      TELEMETRY_ENABLED: 'false'
+      # Add encryption keys to prevent warnings
+      XPACK_SECURITY_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      XPACK_REPORTING_ENCRYPTIONKEY: 'fhjskloppd678ehkdfdlliverpoolfcr'
+      # Set reporting roles to false as suggested in warning
+      XPACK_REPORTING_ROLES_ENABLED: 'false'
+      # Enable secure cookies
+      XPACK_SECURITY_SECURECOOKIES: 'false'
+      # Fix for Chromium sandbox warning
+      XPACK_SCREENSHOTTING_BROWSER_CHROMIUM_DISABLESANDBOX: 'true'
+    networks:
+      - mynet
+    ports:
+      - '5601:5601'
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    volumes:
+      - kibana_data_test:/usr/share/kibana/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -I http://localhost:5601 | grep -q 'HTTP/1.1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.12.1
+    container_name: logstash
+    environment:
+      ELASTIC_PASSWORD: *elastic_password
+      XPACK_MONITORING_ENABLED: "false"
+      CONFIG_STRING: |
+        input {
+          tcp {
+            port => 3100
+            codec => json_lines
+          }
+        }
+
+        filter {
+          mutate {
+            add_field => { "[@metadata][target_index]" => "crud-logs.log-%{+YYYY.MM.dd}" }
+          }
+
+          if ![application] {
+            mutate {
+              add_field => { "application" => "unknown" }
+            }
+          }
+        }
+
+        output {
+          elasticsearch {
+            hosts => ["http://elasticsearch:9200"]
+            user => "elastic"
+            password => "${ELASTIC_PASSWORD}"
+            ssl_enabled => false
+            ilm_enabled => false
+            index => "%{[@metadata][target_index]}"
+          }
+
+          stdout {
+            codec => rubydebug
+          }
+        }
+    networks:
+      - mynet
+    ports:
+      - "3100:3100"
+      - "9600:9600"  # Logstash monitoring API
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9600/_node/pipelines?pretty || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
@@ -420,23 +463,25 @@ services:
 
 
   rabbitmq:
-    image: rabbitmq:3-management
+    image: rabbitmq:4-management
     container_name: rabbitmq
     networks:
       - mynet
     ports:
-      - "5672:5672"  # AMQP port
+      - "5672:5672"    # AMQP port
       - "15672:15672"  # Management UI port
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 30s
 
   sonarqube:
     image: sonarqube:latest
@@ -459,58 +504,57 @@ services:
       # Admin credentials
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
-      
+
       # Database configuration
       KC_DB: mysql
-      KC_DB_URL: jdbc:mysql://mysql:3306/keycloak_db
+      KC_DB_URL: jdbc:mysql://mysql:3306/keycloak
       KC_DB_USERNAME: root
       KC_DB_PASSWORD: root
-      
+
       # HTTP/HTTPS configuration
       KC_HTTP_ENABLED: "true"
       KC_HTTP_PORT: 8080
       KC_HOSTNAME_STRICT: "false"
       KC_HOSTNAME_STRICT_HTTPS: "false"
       KC_PROXY: edge
-      
+
       # Features
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_FEATURES: token-exchange,admin-fine-grained-authz
-      
+
       # Logging
       KC_LOG_LEVEL: INFO
       KC_LOG_CONSOLE_OUTPUT: json
-      
+
       # Cache configuration (for production)
       KC_CACHE: ispn
       KC_CACHE_STACK: tcp
-      
+
     ports:
       - "8080:8080"
       - "8443:8443"  # HTTPS port
       - "9300:9000"  # Management port
-    
+
     command:
       - start-dev
-      - --import-realm
-      - --http-relative-path=/auth
-    
+      - --import-realm  # Enable realm import on startup
+
     volumes:
-      - ./realm-export:/opt/keycloak/data/import
+      - ./realm-export:/opt/keycloak/data/import  # Auto-import from this directory
       - keycloak_data:/opt/keycloak/data
-    
+
     networks:
       - mynet
-    
+
     depends_on:
       mysql:
         condition: service_healthy
-    
+
     restart: unless-stopped
-    
+
     healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e \"GET /auth/health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n\" >&3;if [ $? -eq 0 ]; then echo 'Healthy'; else echo 'Unhealthy'; exit 1; fi;"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health/ready" ]
       interval: 30s
       timeout: 10s
       retries: 5
