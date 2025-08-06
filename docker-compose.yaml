@@ -15,6 +15,10 @@ volumes:
     driver: local
   rabbitmq_data:
     driver: local
+  sonar_db_data:
+    driver: local
+  keycloak_data:
+    driver: local
 
 x-variables:
   elastic_password: &elastic_password 'passwOrd'
@@ -97,7 +101,7 @@ services:
 
 
   client:
-    image: mycodeschool/crud-client-api:15.06.2025.05.42.51-dev
+    image: mycodeschool/crud-client-api:06.08.2025.05.42.20-dev
     networks:
       - mynet
     ports:
@@ -434,3 +438,80 @@ services:
       timeout: 10s
       retries: 5
 
+  sonarqube:
+    image: sonarqube:latest
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      - SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+      - SONARQUBE_JDBC_URL=jdbc:mysql://mysql:3306/sonar
+      - SONARQUBE_JDBC_USERNAME=root
+      - SONARQUBE_JDBC_PASSWORD=root
+    depends_on:
+      - mysql
+
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.4
+    container_name: keycloak
+    environment:
+      # Admin credentials
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      
+      # Database configuration
+      KC_DB: mysql
+      KC_DB_URL: jdbc:mysql://mysql:3306/keycloak_db
+      KC_DB_USERNAME: root
+      KC_DB_PASSWORD: root
+      
+      # HTTP/HTTPS configuration
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 8080
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+      KC_PROXY: edge
+      
+      # Features
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_FEATURES: token-exchange,admin-fine-grained-authz
+      
+      # Logging
+      KC_LOG_LEVEL: INFO
+      KC_LOG_CONSOLE_OUTPUT: json
+      
+      # Cache configuration (for production)
+      KC_CACHE: ispn
+      KC_CACHE_STACK: tcp
+      
+    ports:
+      - "8080:8080"
+      - "8443:8443"  # HTTPS port
+      - "9300:9000"  # Management port
+    
+    command:
+      - start-dev
+      - --import-realm
+      - --http-relative-path=/auth
+    
+    volumes:
+      - ./realm-export:/opt/keycloak/data/import
+      - keycloak_data:/opt/keycloak/data
+    
+    networks:
+      - mynet
+    
+    depends_on:
+      mysql:
+        condition: service_healthy
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e \"GET /auth/health/ready HTTP/1.1\r\nhost: localhost\r\nConnection: close\r\n\r\n\" >&3;if [ $? -eq 0 ]; then echo 'Healthy'; else echo 'Unhealthy'; exit 1; fi;"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
