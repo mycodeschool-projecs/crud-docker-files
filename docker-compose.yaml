@@ -53,7 +53,7 @@ services:
       --collation-server=utf8mb4_unicode_ci
 
   kube-land:
-    image: mycodeschool/crud-auth-api:09.07.2025.19.03.23-dev
+    image: mycodeschool/crud-auth-api:29.09.2025.13.42.23-prod
     networks:
       - mynet
     environment:
