@@ -95,7 +95,7 @@ services:
         condition: service_started
 
   notifications-service:
-    image: mycodeschool/crud-notification-api:06.10.2025.15.34.34-dev
+    image: mycodeschool/crud-notification-api:06.10.2025.17.01.34-dev
     networks:
       - mynet
     ports:
