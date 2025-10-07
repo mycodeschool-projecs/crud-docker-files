@@ -67,7 +67,7 @@ services:
 
 
   kube-ms1:
-    image: mycodeschool/crud-command-api:06.10.2025.14.13.26-dev
+    image: mycodeschool/crud-command-api:07.10.2025.11.07.29-dev
     networks:
       - mynet
     ports:
